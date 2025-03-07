@@ -11,6 +11,7 @@ platformdirs==4.3.6
 PyQt6>=6.4.0
 numpy>=1.22.0
 opencv-python>=4.6.0
+pillow>=9.0.0  # Added for additional image processing capabilities
 
 # Optional dependencies for development
 pytest>=7.0.0

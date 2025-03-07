@@ -73,6 +73,7 @@ def get_dark_style():
         
         QPushButton:hover {
             background-color: #424242;
+            border: 1px solid #bb86fc;
         }
         
         QPushButton:pressed {
@@ -104,7 +105,7 @@ def get_dark_style():
         
         QScrollArea {
             border: none;
-            background-color: #121212;
+            background-color: transparent;
         }
         
         QScrollBar:vertical {

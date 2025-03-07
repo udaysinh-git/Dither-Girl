@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QMainWindow, QLabel, QSlider, QVBoxLayout, 
                            QHBoxLayout, QWidget, QPushButton, QFileDialog, 
                            QGroupBox, QScrollArea, QSizePolicy, QFrame,
-                           QSpacerItem)
+                           QSpacerItem, QGridLayout, QComboBox, QStackedWidget)
 from PyQt6.QtGui import QPixmap, QImage, QAction, QCursor, QIcon, QFont
 from PyQt6.QtCore import Qt, QTimer, QPoint, QSize
 import cv2
@@ -11,52 +11,11 @@ import copy
 from ui.styles import get_dark_style
 from utils.image_loader import load_image, save_image
 from edit.image_filters import ImageFilters
-
-class ImageScrollArea(QScrollArea):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.parent = parent
-        self.setWidgetResizable(True)
-        self.hand_mode = False
-        self.last_pos = None
-        
-    def mousePressEvent(self, event):
-        if self.hand_mode and event.button() == Qt.MouseButton.LeftButton:
-            self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
-            self.last_pos = event.position().toPoint()
-        super().mousePressEvent(event)
-            
-    def mouseReleaseEvent(self, event):
-        if self.hand_mode:
-            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
-        super().mouseReleaseEvent(event)
-    
-    def mouseMoveEvent(self, event):
-        if self.hand_mode and self.last_pos:
-            delta = event.position().toPoint() - self.last_pos
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
-            self.last_pos = event.position().toPoint()
-        super().mouseMoveEvent(event)
-    
-    def setHandMode(self, enabled):
-        self.hand_mode = enabled
-        if enabled:
-            self.setCursor(QCursor(Qt.CursorShape.OpenHandCursor))
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
-        else:
-            self.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-
-class IconButton(QPushButton):
-    def __init__(self, text, tooltip=None, parent=None):
-        super().__init__(text, parent)
-        self.setFixedSize(40, 40)
-        if tooltip:
-            self.setToolTip(tooltip)
-        self.setFont(QFont("Consolas", 12))
+from effects import get_effect, get_effect_names, apply_effect
+from ui.components.image_view import ImageScrollArea, create_image_label
+from ui.components.toolbar import EditorToolbar
+from ui.components.controls_sidebar import ControlsSidebar
+from ui.components.effect_manager import EffectManager
 
 class ImageEditorWindow(QMainWindow):
     def __init__(self):
@@ -64,241 +23,56 @@ class ImageEditorWindow(QMainWindow):
         self.image_filters = ImageFilters()
         self.original_image = None
         self.edited_image = None
+        self.zoom_factor = 1.0
         self.edit_timer = QTimer()
         self.edit_timer.setSingleShot(True)
         self.edit_timer.timeout.connect(self.delayed_edit)
-        self.zoom_factor = 1.0
         
         # History for undo/redo
         self.history = []
         self.current_position = -1
-        self.max_history = 20  # Maximum number of history states to keep
+        self.max_history = 20
+        
+        # Create effect manager
+        self.effect_manager = EffectManager()
         
         self.initUI()
         
     def initUI(self):
-        # Set dark theme
         self.setStyleSheet(get_dark_style())
-        
-        # Window properties
         self.setWindowTitle('Dither Girl - Image Editor')
         self.setGeometry(100, 100, 1200, 800)
-        
-        # Create menu bar
         self.createMenuBar()
         
-        # Main layout
+        # Create main layout container
         main_layout = QHBoxLayout()
-        main_layout.setSpacing(20)  # Add more spacing between main elements
-        main_layout.setContentsMargins(20, 20, 20, 20)  # Add margins around the edges
+        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(20, 20, 20, 20)
         
-        # Image display area
+        # Image view section using new component
         self.image_container = QWidget()
         self.image_container.setObjectName("image_container")
         self.image_container_layout = QVBoxLayout(self.image_container)
-        self.image_container_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.image_label = QLabel('No Image Loaded')
-        self.image_label.setObjectName("image_placeholder")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        
-        # Scroll area for the image
+        self.image_container_layout.setContentsMargins(0,0,0,0)
+        self.image_label = create_image_label()  # from image_view module
         self.scroll_area = ImageScrollArea()
         self.scroll_area.setWidget(self.image_container)
         self.image_container_layout.addWidget(self.image_label)
-        self.image_container_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        # Create toolbar frame
-        toolbar_frame = QFrame()
-        toolbar_frame.setObjectName("toolbar_frame")
-        toolbar_frame.setFixedHeight(54)
-        toolbar_frame.setStyleSheet("""
-            #toolbar_frame {
-                background-color: #1e1e1e;
-                border-radius: 10px;
-                padding: 4px;
-            }
-        """)
+        # Toolbar from new module
+        self.toolbar = EditorToolbar(main_window=self)
         
-        # Zoom controls
-        toolbar_layout = QHBoxLayout(toolbar_frame)
-        toolbar_layout.setSpacing(6)
-        toolbar_layout.setContentsMargins(8, 4, 8, 4)
-        
-        # Undo button
-        self.undo_btn = IconButton("↩", "Undo (Ctrl+Z)")
-        self.undo_btn.clicked.connect(self.undo)
-        self.undo_btn.setEnabled(False)
-        
-        # Redo button
-        self.redo_btn = IconButton("↪", "Redo (Ctrl+Y)")
-        self.redo_btn.clicked.connect(self.redo)
-        self.redo_btn.setEnabled(False)
-        
-        # Add a separator
-        separator1 = QFrame()
-        separator1.setFrameShape(QFrame.Shape.VLine)
-        separator1.setFrameShadow(QFrame.Shadow.Sunken)
-        separator1.setFixedWidth(1)
-        separator1.setStyleSheet("background-color: #303030;")
-        
-        # Zoom controls
-        zoom_in_btn = IconButton("+", "Zoom In")
-        zoom_in_btn.clicked.connect(self.zoom_in)
-        
-        zoom_out_btn = IconButton("-", "Zoom Out")
-        zoom_out_btn.clicked.connect(self.zoom_out)
-        
-        zoom_reset_btn = IconButton("1:1", "Actual Size")
-        zoom_reset_btn.clicked.connect(self.zoom_reset)
-        
-        zoom_fit_btn = IconButton("□", "Fit to View")
-        zoom_fit_btn.clicked.connect(self.zoom_to_fit)
-        
-        # Add a separator
-        separator2 = QFrame()
-        separator2.setFrameShape(QFrame.Shape.VLine)
-        separator2.setFrameShadow(QFrame.Shadow.Sunken)
-        separator2.setFixedWidth(1)
-        separator2.setStyleSheet("background-color: #303030;")
-        
-        self.hand_tool_btn = IconButton("✋", "Hand Tool (Pan)")
-        self.hand_tool_btn.setCheckable(True)
-        self.hand_tool_btn.clicked.connect(self.toggle_hand_tool)
-        
-        # Add all buttons to toolbar
-        toolbar_layout.addWidget(self.undo_btn)
-        toolbar_layout.addWidget(self.redo_btn)
-        toolbar_layout.addWidget(separator1)
-        toolbar_layout.addWidget(zoom_in_btn)
-        toolbar_layout.addWidget(zoom_out_btn)
-        toolbar_layout.addWidget(zoom_reset_btn)
-        toolbar_layout.addWidget(zoom_fit_btn)
-        toolbar_layout.addWidget(separator2)
-        toolbar_layout.addWidget(self.hand_tool_btn)
-        toolbar_layout.addStretch()
-        
-        # Add zoom controls and scroll area to image view layout
         image_view_layout = QVBoxLayout()
         image_view_layout.setSpacing(10)
         image_view_layout.addWidget(self.scroll_area)
-        image_view_layout.addWidget(toolbar_frame)
+        image_view_layout.addWidget(self.toolbar)
         
-        # Controls sidebar
-        controls_widget = QWidget()
-        controls_layout = QVBoxLayout(controls_widget)
-        controls_layout.setSpacing(15)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
+        # Controls sidebar from new module
+        self.controls_sidebar = ControlsSidebar(main_window=self)
         
-        # Group box for editing controls
-        edit_group = QGroupBox("EDITING CONTROLS")
-        edit_group.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
-        edit_layout = QVBoxLayout(edit_group)
-        edit_layout.setSpacing(16)
-        
-        # Slider creation helper function
-        def create_slider_layout(name, min_val, max_val, default_val, connect_func):
-            layout = QVBoxLayout()
-            layout.setSpacing(5)
-            
-            # Label and value display
-            header_layout = QHBoxLayout()
-            label = QLabel(name)
-            header_layout.addWidget(label)
-            
-            value_label = QLabel(f"{default_val}")
-            value_label.setAlignment(Qt.AlignmentFlag.AlignRight)
-            header_layout.addWidget(value_label)
-            layout.addLayout(header_layout)
-            
-            # Slider
-            slider = QSlider(Qt.Orientation.Horizontal)
-            slider.setRange(min_val, max_val)
-            slider.setValue(default_val)
-            slider.valueChanged.connect(connect_func)
-            # Update value label when slider changes
-            slider.valueChanged.connect(lambda v: value_label.setText(f"{v}"))
-            layout.addWidget(slider)
-            
-            return layout, slider
-        
-        # Brightness slider
-        brightness_layout, self.brightness_slider = create_slider_layout(
-            "BRIGHTNESS", -100, 100, 0, self.apply_edits)
-        edit_layout.addLayout(brightness_layout)
-        
-        # Contrast slider
-        contrast_layout, self.contrast_slider = create_slider_layout(
-            "CONTRAST", -100, 100, 0, self.apply_edits)
-        edit_layout.addLayout(contrast_layout)
-        
-        # Saturation slider
-        saturation_layout, self.saturation_slider = create_slider_layout(
-            "SATURATION", -100, 100, 0, self.apply_edits)
-        edit_layout.addLayout(saturation_layout)
-        
-        # Sharpness slider
-        sharpness_layout, self.sharpness_slider = create_slider_layout(
-            "SHARPNESS", 0, 100, 0, self.apply_edits)
-        edit_layout.addLayout(sharpness_layout)
-        
-        # Blur slider
-        blur_layout, self.blur_slider = create_slider_layout(
-            "BLUR", 0, 30, 0, self.apply_edits)
-        edit_layout.addLayout(blur_layout)
-        
-        # Add a separator
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setFrameShadow(QFrame.Shadow.Sunken)
-        separator.setStyleSheet("background-color: #303030;")
-        edit_layout.addWidget(separator)
-        
-        # Effects buttons
-        effects_label = QLabel("EFFECTS")
-        effects_label.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
-        edit_layout.addWidget(effects_label)
-        
-        effects_grid = QHBoxLayout()
-        
-        grayscale_btn = QPushButton("Grayscale")
-        grayscale_btn.clicked.connect(self.apply_grayscale)
-        effects_grid.addWidget(grayscale_btn)
-        
-        negative_btn = QPushButton("Negative")
-        negative_btn.clicked.connect(self.apply_negative)
-        effects_grid.addWidget(negative_btn)
-        
-        edit_layout.addLayout(effects_grid)
-        
-        # Action buttons
-        action_buttons_layout = QVBoxLayout()
-        action_buttons_layout.setSpacing(10)
-        
-        reset_btn = QPushButton("Reset All")
-        reset_btn.clicked.connect(self.reset_edits)
-        action_buttons_layout.addWidget(reset_btn)
-        
-        save_btn = QPushButton("Save Image")
-        save_btn.setObjectName("action_button")
-        save_btn.clicked.connect(self.save_image)
-        action_buttons_layout.addWidget(save_btn)
-        
-        edit_layout.addSpacing(10)
-        edit_layout.addLayout(action_buttons_layout)
-        
-        # Add group box to sidebar
-        controls_layout.addWidget(edit_group)
-        controls_layout.addStretch()
-        
-        controls_widget.setFixedWidth(300)
-        
-        # Add to main layout
         main_layout.addLayout(image_view_layout, 3)
-        main_layout.addWidget(controls_widget, 1)
+        main_layout.addWidget(self.controls_sidebar, 1)
         
-        # Central widget
         central_widget = QWidget()
         central_widget.setLayout(main_layout)
         self.setCentralWidget(central_widget)
@@ -399,11 +173,11 @@ class ImageEditorWindow(QMainWindow):
             return
         
         # Get slider values
-        brightness = self.brightness_slider.value()
-        contrast = self.contrast_slider.value()
-        saturation = self.saturation_slider.value()
-        sharpness = self.sharpness_slider.value()
-        blur_amount = self.blur_slider.value()
+        brightness = self.controls_sidebar.brightness_slider.value()
+        contrast = self.controls_sidebar.contrast_slider.value()
+        saturation = self.controls_sidebar.saturation_slider.value()
+        sharpness = self.controls_sidebar.sharpness_slider.value()
+        blur_amount = self.controls_sidebar.blur_slider.value()
         
         # Start with original image
         self.edited_image = self.original_image.copy()
@@ -430,17 +204,54 @@ class ImageEditorWindow(QMainWindow):
         # Add to history after a delay to avoid adding too many states while dragging sliders
         QTimer.singleShot(500, self.add_to_history)
     
-    def apply_grayscale(self):
+    def apply_effect_with_feedback(self, effect_func, effect_name):
+        """Apply an effect with status bar feedback"""
         if self.edited_image is not None:
-            self.edited_image = self.image_filters.apply_grayscale(self.edited_image)
+            self.statusBar().showMessage(f"Applying {effect_name} effect...")
+            self.edited_image = effect_func(self.edited_image)
             self.display_image(self.edited_image)
             self.add_to_history()
+            self.statusBar().showMessage(f"{effect_name} effect applied", 3000)
     
-    def apply_negative(self):
-        if self.edited_image is not None:
-            self.edited_image = self.image_filters.apply_negative(self.edited_image)
+    def apply_effect(self, effect_name):
+        """Apply an effect with parameters from sliders"""
+        if self.edited_image is None:
+            return
+            
+        self.statusBar().showMessage(f"Applying {effect_name} effect...")
+        
+        try:
+            effect = get_effect(effect_name)
+            params = {}
+            
+            # Get parameters from sliders if the effect has any
+            if effect and effect.has_params:
+                for param_name, param_data in effect.params.items():
+                    slider_key = effect_name + '_' + param_name
+                    if slider_key in self.controls_sidebar.effect_sliders:
+                        slider_value = self.controls_sidebar.effect_sliders[slider_key].value() / 100
+                        
+                        # Handle parameters based on their step value
+                        if param_data.get('step', 1) >= 1:
+                            # Integer parameter (like levels, blur)
+                            params[param_name] = int(slider_value * 100)
+                        else:
+                            # Floating point parameter (like intensity)
+                            params[param_name] = slider_value
+                            
+                        # Debug message
+                        print(f"Effect: {effect_name}, Param: {param_name}, Value: {params[param_name]}")
+            
+            # Use the effect manager to apply the effect
+            self.edited_image = self.effect_manager.apply_effect(effect_name, self.edited_image, params)
             self.display_image(self.edited_image)
             self.add_to_history()
+            self.statusBar().showMessage(f"{effect_name.capitalize()} effect applied", 3000)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()  # Print detailed error information
+            self.statusBar().showMessage(f"Error applying {effect_name} effect: {str(e)}", 5000)
     
     def reset_edits(self):
         if self.original_image is not None:
@@ -450,11 +261,11 @@ class ImageEditorWindow(QMainWindow):
             self.add_to_history()
     
     def reset_sliders(self):
-        self.brightness_slider.setValue(0)
-        self.contrast_slider.setValue(0)
-        self.saturation_slider.setValue(0)
-        self.sharpness_slider.setValue(0)
-        self.blur_slider.setValue(0)
+        self.controls_sidebar.brightness_slider[1].setValue(0)
+        self.controls_sidebar.contrast_slider[1].setValue(0)
+        self.controls_sidebar.saturation_slider[1].setValue(0)
+        self.controls_sidebar.sharpness_slider[1].setValue(0)
+        self.controls_sidebar.blur_slider[1].setValue(0)
     
     def zoom_in(self):
         self.zoom_factor *= 1.25
@@ -494,7 +305,7 @@ class ImageEditorWindow(QMainWindow):
             self.display_image(self.edited_image)
     
     def toggle_hand_tool(self):
-        is_checked = self.hand_tool_btn.isChecked()
+        is_checked = self.toolbar.hand_tool_btn.isChecked()
         self.scroll_area.setHandMode(is_checked)
     
     def clear_history(self):
@@ -515,11 +326,11 @@ class ImageEditorWindow(QMainWindow):
         # Make a deep copy of the current state
         state = {
             'image': self.edited_image.copy(),
-            'brightness': self.brightness_slider.value(),
-            'contrast': self.contrast_slider.value(),
-            'saturation': self.saturation_slider.value(),
-            'sharpness': self.sharpness_slider.value(),
-            'blur': self.blur_slider.value()
+            'brightness': self.controls_sidebar.brightness_slider[1].value(),
+            'contrast': self.controls_sidebar.contrast_slider[1].value(),
+            'saturation': self.controls_sidebar.saturation_slider[1].value(),
+            'sharpness': self.controls_sidebar.sharpness_slider[1].value(),
+            'blur': self.controls_sidebar.blur_slider[1].value()
         }
         
         # Add to history
@@ -535,8 +346,8 @@ class ImageEditorWindow(QMainWindow):
     
     def update_history_buttons(self):
         """Update the enabled state of undo/redo buttons"""
-        self.undo_btn.setEnabled(self.current_position > 0)
-        self.redo_btn.setEnabled(self.current_position < len(self.history) - 1)
+        self.toolbar.undo_btn.setEnabled(self.current_position > 0)
+        self.toolbar.redo_btn.setEnabled(self.current_position < len(self.history) - 1)
     
     def undo(self):
         """Go back one step in history"""
@@ -557,25 +368,30 @@ class ImageEditorWindow(QMainWindow):
         self.edited_image = state['image'].copy()
         
         # Block signals to prevent triggering edits while updating sliders
-        self.brightness_slider.blockSignals(True)
-        self.contrast_slider.blockSignals(True)
-        self.saturation_slider.blockSignals(True)
-        self.sharpness_slider.blockSignals(True)
-        self.blur_slider.blockSignals(True)
+        self.controls_sidebar.brightness_slider.blockSignals(True)
+        self.controls_sidebar.contrast_slider.blockSignals(True)
+        self.controls_sidebar.saturation_slider.blockSignals(True)
+        self.controls_sidebar.sharpness_slider.blockSignals(True)
+        self.controls_sidebar.blur_slider.blockSignals(True)
         
         # Restore slider values
-        self.brightness_slider.setValue(state['brightness'])
-        self.contrast_slider.setValue(state['contrast'])
-        self.saturation_slider.setValue(state['saturation'])
-        self.sharpness_slider.setValue(state['sharpness'])
-        self.blur_slider.setValue(state['blur'])
+        self.controls_sidebar.brightness_slider.setValue(state['brightness'])
+        self.controls_sidebar.contrast_slider.setValue(state['contrast'])
+        self.controls_sidebar.saturation_slider.setValue(state['saturation'])
+        self.controls_sidebar.sharpness_slider.setValue(state['sharpness'])
+        self.controls_sidebar.blur_slider.setValue(state['blur'])
         
         # Unblock signals
-        self.brightness_slider.blockSignals(False)
-        self.contrast_slider.blockSignals(False)
-        self.saturation_slider.blockSignals(False)
-        self.sharpness_slider.blockSignals(False)
-        self.blur_slider.blockSignals(False)
+        self.controls_sidebar.brightness_slider.blockSignals(False)
+        self.controls_sidebar.contrast_slider.blockSignals(False)
+        self.controls_sidebar.saturation_slider.blockSignals(False)
+        self.controls_sidebar.sharpness_slider.blockSignals(False)
+        self.controls_sidebar.blur_slider.blockSignals(False)
         
         # Display the restored image
         self.display_image(self.edited_image)
+    
+    def on_effect_dropdown_changed(self, index):
+        """Handle effect dropdown selection with category separators"""
+        # Now implemented in EffectsPanel class
+        pass
